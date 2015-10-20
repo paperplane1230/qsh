@@ -7,7 +7,7 @@ set(CMAKE_C_FLAGS_RELEASE "-fdiagnostics-color=always -std=gnu11 -g -O2 -Wall -W
 # aux_source_directory(. DIR_SRCS)
 # add_subdirectory()
 
-add_executable(qsh main.c)
+add_executable(qsh main.c error.c)
 SET(EXECUTABLE_OUTPUT_PATH ${PROJECT_BINARY_DIR}/bin)
 
 # target_link_libraries(  )
