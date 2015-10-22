@@ -6,12 +6,13 @@ cmake_minimum_required (VERSION 2.8)
 
 project (qsh)
 
-set (Demo_VERSION_MAJOR 0)
-set (Demo_VERSION_MINOR 1)
+set(Demo_VERSION_MAJOR 0)
+set(Demo_VERSION_MINOR 1)
 
 aux_source_directory(. DIR_SRCS)
 add_subdirectory(src)
-SET(EXECUTABLE_OUTPUT_PATH ${PROJECT_BINARY_DIR}/bin)
+add_subdirectory(tests)
+# SET(EXECUTABLE_OUTPUT_PATH ${PROJECT_BINARY_DIR}/bin)
 
 # target_link_libraries(  )
 # add_library ( ${DIR_LIB_SRCS})

@@ -21,22 +21,42 @@
  * 
  * Note:
  * Assume the length of a line is less than MAXLINE and there's no string
- * consisting of more than one line.
+ * consisting of more than one line. And it cannot deal with situations
+ * where parameters are in quotes fully or partly while '-' before them is not,
+ * such as `ls -"a"l`.
  */
 static void parseline(const char *cmdline, char **argv)
 {
+#ifdef DEBUG
+    fputs(cmdline, stdout);
+#endif
     static char array[MAXLINE] = {'\0'};
     char *buf = array;
 
     strncpy(buf, cmdline, strlen(cmdline)+1);
     buf[strlen(cmdline)-1] = ' ';
-    while (*buf == ' ' || *buf == '\t') {
+    while (*buf == ' ') {
         ++buf;
     }
     size_t argc = 0;
     char *delim = buf;
 
-    while (*delim != '\0') {
+    if (*buf == '\'') {
+        ++buf;
+        delim = strchr(buf, '\'');
+    } else if (*buf == '\"') {
+        ++buf;
+        delim = strchr(buf, '\"');
+    } else {
+        delim = strchr(buf, ' ');
+    }
+    while (delim != NULL) {
+        *delim = '\0';
+        argv[argc++] = buf;
+        buf = delim + 1;
+        while (*buf == ' ') {
+            ++buf;
+        }
         if (*buf == '\'') {
             ++buf;
             delim = strchr(buf, '\'');
@@ -46,9 +66,6 @@ static void parseline(const char *cmdline, char **argv)
         } else {
             delim = strchr(buf, ' ');
         }
-        *delim = '\0';
-        argv[argc++] = buf;
-        buf = delim + 1;
     }
     argv[argc] = NULL;
 }
@@ -60,7 +77,7 @@ static bool builtin_cmd(char **argv)
 {
     if (strcmp(*argv, "exit") == 0) {
         exit(0);
-    } else if (strcmp(*argv, "cd")) {
+    } else if (strcmp(*argv, "cd") == 0) {
         if (chdir(argv[1]) != 0) {
             unix_error("chdir error");
         }
@@ -69,14 +86,15 @@ static bool builtin_cmd(char **argv)
     return false;
 }
 
+#ifndef DEBUG
 /**
  * eval - Evaluate the cmdline.
  */
 static void eval(const char *cmdline)
 {
     char *argv[MAXARGS] = {NULL};
-
     parseline(cmdline, argv);
+
     if (argv[0] == NULL) {
         return;
     }
@@ -97,7 +115,9 @@ static void eval(const char *cmdline)
         }
     }
 }
+#endif
 
+#ifndef DEBUG
 int main(void)
 {
     char cmdline[MAXLINE] = {'\0'};
@@ -108,10 +128,11 @@ int main(void)
             app_error("fgets error");
         }
         if (feof(stdin)) {
+            fputs("\n", stdout);
             return 0;
         }
         eval(cmdline);
     }
     return 0;
 }
-
+#endif
