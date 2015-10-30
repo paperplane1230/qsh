@@ -56,6 +56,7 @@ flags = [
 '-isystem', '/usr/include',
 '-isystem', '/usr/include/x86_64-linux-gnu',
 '-isystem', '/usr/local/include',
+'-isystem', '/usr/lib/gcc/x86_64-linux-gnu/5/include',
 '-I', 'include',
 '-I', 'src',
 '-I', '.',

@@ -13,8 +13,62 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
+#define UNUSED(x) (void) (x)
+
 #define MAXLINE 1024
 #define MAXARGS 128
+
+typedef void handler_t(int);
+
+const char *prompt = "> ";
+
+/**
+ * signal - Wrapper for the sigaction function. Reliable version of signal(),
+ *          using POSIX sigaction().
+ */
+handler_t *signal(int signum, handler_t *handler)
+{
+    struct sigaction action;
+    struct sigaction old_action;
+
+    action.sa_handler = handler;
+    // block sigs of type being handled
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = 0;
+    if (signum == SIGALRM) {
+#ifdef SA_INTERRUPT
+        action.sa_flags |= SA_INTERRUPT;
+#endif
+    } else {
+        // restart syscalls if possible
+        action.sa_flags |= SA_RESTART;
+    }
+    if (sigaction(signum, &action, &old_action) < 0) {
+        unix_error("sigaction error");
+    }
+    return old_action.sa_handler;
+}
+
+/**
+ * sigint_handler - Singal handler for SIGINT.
+ */
+static void sigint_handler(int sig)
+{
+    // the sig parameter is not used
+    UNUSED(sig);
+    fputs("\n", stdout);
+    fputs(prompt, stdout);
+    fflush(stdout);
+}
+
+/**
+ * sigtstp_handler - Singal handler for SIGTSTP.
+ */
+static void sigtstp_handler(int sig)
+{
+    // the sig parameter is not used
+    UNUSED(sig);
+}
 
 /**
  * parseline - Parse the cmdline to return the parameters.
@@ -118,12 +172,17 @@ static void eval(const char *cmdline)
 #endif
 
 #ifndef DEBUG
+/**
+ * main - The shell's main loop.
+ */
 int main(void)
 {
+    signal(SIGINT, sigint_handler);
+    signal(SIGTSTP, sigtstp_handler);
     char cmdline[MAXLINE] = {'\0'};
 
     while (true) {
-        fputs("> ", stdout);
+        fputs(prompt, stdout);
         if (fgets(cmdline, MAXLINE, stdin) == NULL && ferror(stdin)) {
             app_error("fgets error");
         }
