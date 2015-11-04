@@ -1,10 +1,14 @@
-/*
+/**
  * Author: Alan Chien
  * Email: upplane1230@gmail.com
  * Language: C
  * Date: Sun Oct 18 09:20:42 CST 2015
  * Description: The "main" module of qsh.
  */
+
+// use get_current_dir_name
+#define _GNU_SOURCE
+
 #include "error.h"
 #include <stdio.h>
 #include <stdbool.h>
@@ -12,6 +16,9 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <setjmp.h>
+#include <errno.h>
+#include <limits.h>
 
 #define UNUSED(x) (void) (x)
 
@@ -20,13 +27,16 @@
 
 typedef void handler_t(int);
 
-const char *prompt = "> ";
+static char prompt[MAXLINE];
+
+// judge whether to print prompt when dealing with SIGINT
+static bool inchild = false;
 
 /**
  * signal - Wrapper for the sigaction function. Reliable version of signal(),
  *          using POSIX sigaction().
  */
-handler_t *signal(int signum, handler_t *handler)
+static handler_t *mysignal(int signum, handler_t *handler)
 {
     struct sigaction action;
     struct sigaction old_action;
@@ -50,19 +60,50 @@ handler_t *signal(int signum, handler_t *handler)
 }
 
 /**
- * sigint_handler - Singal handler for SIGINT.
+ * get_prompt - Get prompt with current directory.
+ */
+static char *get_prompt(void)
+{
+    static char buf[PATH_MAX];
+    static bool first = true;
+    // toadd points to the place for copying current directory name
+    static char *toadd = buf;
+
+    if (first) {
+        strcpy(buf, prompt);
+        toadd += strlen(prompt);
+        first = false;
+    }
+    *toadd = '\0';
+    // NOTE: this pointer should be **freed**!
+    char *dirname = get_current_dir_name();
+
+    if (dirname == NULL) {
+        dirname = "";
+    }
+    strcat(toadd, dirname);
+    strcat(toadd, "> ");
+    free(dirname);
+    dirname = NULL;
+    return buf;
+}
+
+/**
+ * sigint_handler - Signal handler for SIGINT.
  */
 static void sigint_handler(int sig)
 {
     // the sig parameter is not used
     UNUSED(sig);
     fputs("\n", stdout);
-    fputs(prompt, stdout);
-    fflush(stdout);
+    if (!inchild) {
+        fputs(get_prompt(), stdout);
+        fflush(stdout);
+    }
 }
 
 /**
- * sigtstp_handler - Singal handler for SIGTSTP.
+ * sigtstp_handler - Signal handler for SIGTSTP.
  */
 static void sigtstp_handler(int sig)
 {
@@ -95,14 +136,18 @@ static void parseline(const char *cmdline, char **argv)
     size_t argc = 0;
     char *delim = buf;
 
-    if (*buf == '\'') {
+    switch (*buf) {
+    case '\'':
         ++buf;
         delim = strchr(buf, '\'');
-    } else if (*buf == '\"') {
+        break;
+    case '\"':
         ++buf;
         delim = strchr(buf, '\"');
-    } else {
+        break;
+    default:
         delim = strchr(buf, ' ');
+        break;
     }
     while (delim != NULL) {
         *delim = '\0';
@@ -111,14 +156,18 @@ static void parseline(const char *cmdline, char **argv)
         while (*buf == ' ') {
             ++buf;
         }
-        if (*buf == '\'') {
+        switch (*buf) {
+        case '\'':
             ++buf;
             delim = strchr(buf, '\'');
-        } else if (*buf == '\"') {
+            break;
+        case '\"':
             ++buf;
             delim = strchr(buf, '\"');
-        } else {
+            break;
+        default:
             delim = strchr(buf, ' ');
+            break;
         }
     }
     argv[argc] = NULL;
@@ -132,8 +181,21 @@ static bool builtin_cmd(char **argv)
     if (strcmp(*argv, "exit") == 0) {
         exit(0);
     } else if (strcmp(*argv, "cd") == 0) {
+        if (argv[1] == NULL) {
+            argv[1] = getenv("HOME");
+        }
         if (chdir(argv[1]) != 0) {
-            unix_error("chdir error");
+            switch (errno) {
+            case EACCES :
+                app_error("cd: Permission denied.");
+                break;
+            case ENOENT:
+                app_error("cd: No such directory.");
+                break;
+            default:
+                unix_error("chdir error");
+                break;
+            }
         }
         return true;
     }
@@ -163,6 +225,7 @@ static void eval(const char *cmdline)
         } else if (pid < 0) {
             unix_error("fork error");
         } else {
+            inchild = true;
             if (wait(NULL) < 0) {
                 unix_error("wait error");
             }
@@ -177,20 +240,23 @@ static void eval(const char *cmdline)
  */
 int main(void)
 {
-    signal(SIGINT, sigint_handler);
-    signal(SIGTSTP, sigtstp_handler);
+    strcat(prompt, getenv("LOGNAME"));
+    strcat(prompt, ":");
+    mysignal(SIGINT, sigint_handler);
+    mysignal(SIGTSTP, sigtstp_handler);
     char cmdline[MAXLINE] = {'\0'};
 
     while (true) {
-        fputs(prompt, stdout);
+        fputs(get_prompt(), stdout);
         if (fgets(cmdline, MAXLINE, stdin) == NULL && ferror(stdin)) {
-            app_error("fgets error");
+            app_fatal("fgets error");
         }
         if (feof(stdin)) {
             fputs("\n", stdout);
             return 0;
         }
         eval(cmdline);
+        inchild = false;
     }
     return 0;
 }

@@ -1,4 +1,4 @@
-/*
+/**
  * Author: Alan Chien
  * Email: upplane1230@gmail.com
  * Language: C
@@ -10,12 +10,20 @@
 #include <stdlib.h>
 
 /**
- * app_error - Dealing with errors caused by application.
+ * app_fatal - Dealing with fatal errors caused by application.
+ */
+void app_fatal(const char *err_msg)
+{
+    fprintf(stdout, "%s\n", err_msg);
+    exit(1);
+}
+
+/**
+ * app_error - Dealing with normal errors caused by application.
  */
 void app_error(const char *err_msg)
 {
     fprintf(stdout, "%s\n", err_msg);
-    exit(1);
 }
 
 /**

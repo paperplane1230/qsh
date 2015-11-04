@@ -5,7 +5,7 @@ START_TEST(test_parseline)
 {
     char *argv[16] = {NULL};
 
-    parseline("ls -l  \"-a\" -bC\n", argv);
+    parseline("ls -l  2>/dev/null \"-a\" -bC\n", argv);
     ck_assert_str_eq(argv[0], "ls");
     ck_assert_str_eq(argv[1], "-l");
     ck_assert_str_eq(argv[2], "-a");
