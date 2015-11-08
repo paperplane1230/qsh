@@ -7,7 +7,7 @@ cmake_minimum_required (VERSION 2.8)
 project (qsh)
 
 set(Demo_VERSION_MAJOR 0)
-set(Demo_VERSION_MINOR 1)
+set(Demo_VERSION_MINOR 2)
 
 aux_source_directory(. DIR_SRCS)
 add_subdirectory(src)

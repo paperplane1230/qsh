@@ -15,7 +15,7 @@
 void app_fatal(const char *err_msg)
 {
     fprintf(stdout, "%s\n", err_msg);
-    exit(1);
+    exit(2);
 }
 
 /**
