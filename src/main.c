@@ -7,6 +7,7 @@
  */
 #include "error.h"
 #include "main.h"
+#include <dirent.h>
 #include <stdio.h>
 #include <stdbool.h>
 #include <fcntl.h>
@@ -47,7 +48,7 @@ static handler_t *mysignal(int signum, handler_t *handler)
         action.sa_flags |= SA_RESTART;
     }
     if (sigaction(signum, &action, &old_action) < 0) {
-        unix_error("sigaction error");
+        unix_fatal("sigaction error");
     }
     return old_action.sa_handler;
 }
@@ -124,7 +125,7 @@ static void redirect(const redirect_t *redirects)
         switch (redirects->type & 24) {
         case CLOSE:
             if (close(typetofd(toredirect)) < 0) {
-                unix_error("close error");
+                unix_fatal("close error");
             }
             break;
         case NO:
@@ -136,16 +137,14 @@ static void redirect(const redirect_t *redirects)
             int fd = open(redirects->filename, mode, RWRWR);
 
             if (fd < 0) {
-                unix_error(redirects->filename);
+                unix_fatal(redirects->filename);
             }
             // toredirect % 4 to convert IN to 0(STDIN_FILENO)
             if (dup2(fd, typetofd(toredirect)) < 0) {
-                unix_error("dup2 error");
-            }
-            // end of shared code
+                unix_fatal("dup2 error");
             }
             break;
-        default:
+        } default:
             break;
         }
         ++redirects;
@@ -155,12 +154,16 @@ static void redirect(const redirect_t *redirects)
 /**
  * copybuf - Copy content in buf to filename.
  */
-static void copybuf(char *filename, const char *buf)
+static void copybuf(char *filename, const char *buf, bool isfile)
 {
     size_t len = strlen(buf);
-    size_t n = len > NAME_MAX - 1 ? NAME_MAX - 1 : len;
+    size_t limit = isfile ? NAME_MAX : PATH_MAX;
+    size_t n = len > limit - 1 ? limit - 1 : len;
 
-    strncpy(filename, buf, len);
+    strncpy(filename, buf, n);
+#ifdef DEBUG
+    printf("%s: length of buffer: %zd\n", filename, n);
+#endif
     filename[n] = '\0';
 }
 
@@ -179,9 +182,14 @@ static void parseline(const char *cmdline, char **argv, redirect_t *redirects)
     fputs(cmdline, stdout);
 #endif
     static char array[MAXLINE] = {'\0'};
+    // the 2d array to store filenames in current directory when a '*' is the parameter
+    static char files[MAXARGS][NAME_MAX];
+    static char path[PATH_MAX] = {'\0'};
     char *buf = array;
+    size_t cmdlen = strlen(cmdline) + 1;
+    size_t n = cmdlen + 1 > MAXLINE ? MAXLINE : cmdlen;
 
-    strncpy(buf, cmdline, strlen(cmdline)+1);
+    strncpy(buf, cmdline, n);
     buf[strlen(cmdline)-1] = ' ';
     while (*buf == ' ') {
         ++buf;
@@ -206,6 +214,32 @@ static void parseline(const char *cmdline, char **argv, redirect_t *redirects)
         enum REDIRECT type;
 
         switch (*buf) {
+        case '~': {
+            char *home = getenv("HOME");
+
+            if (home == NULL) {
+                unix_error("cannot find home directory");
+            }
+            copybuf(path, home, false);
+            size_t len = strlen(buf+1) + 1;
+            size_t n = len > PATH_MAX / 2 ? PATH_MAX / 2 : len;
+
+            strncat(path, buf+1, n);
+            argv[argc++] = path;
+            break;
+        } case '>':
+            if (buf[1] == '>') {
+                redirects[redirect_num].type = APPEND | OUT;
+                copybuf(redirects[redirect_num++].filename, &buf[2], true);
+                break;
+            } else {
+                // NOTE: this branch shares code with case '<'
+            }
+        case '<':
+            type = *buf == '>' ? OUT : IN;
+            redirects[redirect_num].type = type;
+            copybuf(redirects[redirect_num++].filename, &buf[1], true);
+            break;
         case '1':
         case '2':
             type = *buf == '1' ? OUT : ERR;
@@ -215,27 +249,43 @@ static void parseline(const char *cmdline, char **argv, redirect_t *redirects)
                     *redirects[redirect_num++].filename = '\0';
                 } else if (buf[2] == '>') {
                     redirects[redirect_num].type = APPEND | type;
-                    copybuf(redirects[redirect_num++].filename, &buf[3]);
+                    copybuf(redirects[redirect_num++].filename, &buf[3], true);
                 } else {
                     redirects[redirect_num].type = type;
-                    copybuf(redirects[redirect_num++].filename, &buf[2]);
+                    copybuf(redirects[redirect_num++].filename, &buf[2], true);
                 }
-            }
-            break;
-        case '>':
-            if (buf[1] == '>') {
-                redirects[redirect_num].type = APPEND | OUT;
-                copybuf(redirects[redirect_num++].filename, &buf[2]);
                 break;
             } else {
-                // NOTE: this branch shares code with case '<'
+                // NOTE: this branch shares code with case 'default'
             }
-        case '<':
-            type = *buf == '>' ? OUT : IN;
-            redirects[redirect_num].type = type;
-            copybuf(redirects[redirect_num++].filename, &buf[1]);
-            break;
-        default:
+        case '*': {
+            if (buf[1] == '\0' && *buf == '*') {
+                DIR *dp = opendir(".");
+
+                if (dp == NULL) {
+                    unix_fatal("can't get all files and directories");
+                }
+                struct dirent *dirp = NULL;
+                size_t file_number = 0;
+
+                errno = 0;
+                while ((dirp = readdir(dp)) != NULL) {
+                    if (dirp->d_name[0] != '.') {
+                        copybuf(files[file_number], dirp->d_name, true);
+                        argv[argc++] = files[file_number++];
+                    }
+                }
+                if (errno != 0) {
+                    unix_fatal("readdir error");
+                }
+                if (closedir(dp) < 0) {
+                    unix_fatal("closedir error");
+                }
+                break;
+            } else {
+                // NOTE: this branch shares code with case 'default'
+            }
+        } default:
             argv[argc++] = buf;
             break;
         }
@@ -270,16 +320,6 @@ static bool builtin_cmd(char **argv)
             char *home = getenv("HOME");
 
             argv[1] = home == NULL ? "" : home;
-        } else if (argv[1][0] == '~') {
-            char path[PATH_MAX] = {'\0'};
-            char *home = getenv("HOME");
-
-            if (home == NULL) {
-                unix_error("cannot find home directory");
-            }
-            strcpy(path, home);
-            strcat(path, &argv[1][1]);
-            argv[1] = path;
         }
         if (chdir(argv[1]) != 0) {
             switch (errno) {
@@ -323,11 +363,11 @@ static void eval(const char *cmdline)
                 exit(3);
             }
         } else if (pid < 0) {
-            unix_error("fork error");
+            unix_fatal("fork error");
         } else {
             inchild = true;
             if (wait(NULL) < 0) {
-                unix_error("wait error");
+                unix_fatal("wait error");
             }
         }
     }

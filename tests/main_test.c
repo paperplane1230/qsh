@@ -8,9 +8,10 @@ START_TEST(test_parseline)
 
     parseline("ls -l  >>test.txt 2>/dev/null <test.txt 2>&- \"-a\" -bC\n", argv, redirects);
     ck_assert_ptr_ne(redirects, NULL);
-    printf("Redirects begin:\n");
+    fputs("\n", stdout);
+    fputs("Redirects begin:\n", stdout);
     redirect(redirects);
-    printf("Redirects end:\n");
+    fputs("Redirects end:\n\n", stdout);
     ck_assert_str_eq(argv[0], "ls");
     ck_assert_str_eq(argv[1], "-l");
     ck_assert_str_eq(argv[2], "-a");
@@ -24,9 +25,17 @@ START_TEST(test_parseline)
     ck_assert_str_eq(redirects[3].filename, "");
     ck_assert_int_eq(redirects[3].type, ERR | CLOSE);
 
-    parseline("echo \"heeh\"\n", argv, redirects);
-    ck_assert_str_eq(argv[0], "echo");
-    ck_assert_str_eq(argv[1], "heeh");
+    parseline("cd ~\n", argv, redirects);
+    ck_assert_str_eq(argv[0], "cd");
+    ck_assert_str_eq(argv[1], "/home/qyl");
+
+    parseline("ls 234 >a\n", argv, redirects);
+    fputs("\n", stdout);
+    fputs("Redirects begin:\n", stdout);
+    redirect(redirects);
+    fputs("Redirects end:\n\n", stdout);
+    ck_assert_str_eq(redirects[0].filename, "a");
+    ck_assert_int_eq(redirects[0].type, OUT);
 }
 END_TEST
 
