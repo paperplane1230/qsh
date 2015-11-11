@@ -107,7 +107,7 @@ static void sigtstp_handler(int sig)
 #endif
 
 /**
- * redirect - Do redirection according to content in redirects.
+ * redirect - Do redirect according to content in redirects.
  */
 static void redirect(const redirect_t *redirects)
 {
@@ -140,8 +140,15 @@ static void redirect(const redirect_t *redirects)
                 unix_fatal(redirects->filename);
             }
             // toredirect % 4 to convert IN to 0(STDIN_FILENO)
-            if (dup2(fd, typetofd(toredirect)) < 0) {
-                unix_fatal("dup2 error");
+            int newfd = typetofd(toredirect);
+
+            if (fd != newfd) {
+                if (dup2(fd, newfd) < 0) {
+                    unix_fatal("dup2 error");
+                }
+                if (close(fd) < 0) {
+                    unix_fatal("close error");
+                }
             }
             break;
         } default:
