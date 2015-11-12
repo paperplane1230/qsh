@@ -1,9 +1,5 @@
 /**
- * Author: Alan Chien
- * Email: upplane1230@gmail.com
- * Language: C
- * Date: Sun Oct 18 09:20:42 CST 2015
- * Description: The "main" module of qsh.
+ * The "main" module of qsh.
  */
 #include "error.h"
 #include "main.h"
@@ -14,8 +10,10 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <ctype.h>
 #include <sys/wait.h>
-#include <setjmp.h>
+#include <stdio.h>
+#include <time.h>
 #include <errno.h>
 
 #ifndef DEBUG
@@ -63,6 +61,8 @@ static void set_prompt(void)
     // path_place points to the place for copying current directory name
     static char *path_place = prompt;
     static bool first = true;
+#define timelen 64
+    static char timebuf[timelen] = ":";
 
     if (first) {
         path_place += strlen(prompt);
@@ -76,6 +76,13 @@ static void set_prompt(void)
         dirname = "";
     }
     strcat(path_place, dirname);
+    time_t t;
+
+    if (time(&t) < 0) {
+        unix_fatal("time error");
+    }
+    strftime(timebuf+1, timelen, "%T", gmtime(&t));
+    strcat(path_place, timebuf);
     strcat(path_place, "> ");
     free(dirname);
     dirname = NULL;
@@ -143,7 +150,7 @@ static void redirect(const redirect_t *redirects)
             int newfd = typetofd(toredirect);
 
             if (fd != newfd) {
-                if (dup2(fd, newfd) < 0) {
+                if (dup2(fd, newfd) != newfd) {
                     unix_fatal("dup2 error");
                 }
                 if (close(fd) < 0) {
@@ -215,12 +222,20 @@ static void parseline(const char *cmdline, char **argv, redirect_t *redirects)
         break;
     }
     size_t redirect_num = 0;
+    // to be returned for pipe
+    char *next_cmd = NULL;
 
     while (delim != NULL) {
         *delim = '\0';
         enum REDIRECT type;
 
         switch (*buf) {
+        case '|':
+            if (!isspace(buf[1])) {
+                next_cmd = cmdline + ++buf - array;
+                break;
+            }
+            goto do_nothing;
         case '~': {
             char *home = getenv("HOME");
 
@@ -262,11 +277,10 @@ static void parseline(const char *cmdline, char **argv, redirect_t *redirects)
                     copybuf(redirects[redirect_num++].filename, &buf[2], true);
                 }
                 break;
-            } else {
-                // NOTE: this branch shares code with case 'default'
             }
+            goto do_nothing;
         case '*': {
-            if (buf[1] == '\0' && *buf == '*') {
+            if (buf[1] == '\0') {
                 DIR *dp = opendir(".");
 
                 if (dp == NULL) {
@@ -289,10 +303,9 @@ static void parseline(const char *cmdline, char **argv, redirect_t *redirects)
                     unix_fatal("closedir error");
                 }
                 break;
-            } else {
-                // NOTE: this branch shares code with case 'default'
             }
         } default:
+do_nothing:
             argv[argc++] = buf;
             break;
         }
