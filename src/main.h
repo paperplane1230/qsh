@@ -27,7 +27,10 @@ typedef struct _redirect_t {
 
 typedef void handler_t(int);
 
-// map type of redirect to file descriptor
+/**
+ * typetofd - Map type of redirect to file descriptor.
+ * redirect : REDIRECT to be casted.
+ */
 static inline int typetofd(const enum REDIRECT redirect)
 {
     return redirect % 4;

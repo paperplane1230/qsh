@@ -23,10 +23,14 @@ static char prompt[MAXLINE];
 static bool inchild = false;
 #endif
 
+static char cmd[MAXLINE] = {'\0'};
+
 #ifndef DEBUG
 /**
  * signal - Wrapper for the sigaction function. Reliable version of signal(),
  *          using POSIX sigaction().
+ * signum : Signal to be handled.
+ * handler : Function to be called.
  */
 static handler_t *mysignal(int signum, handler_t *handler)
 {
@@ -90,6 +94,7 @@ static void set_prompt(void)
 
 /**
  * sigint_handler - Signal handler for SIGINT.
+ * sig : Signal number.
  */
 static void sigint_handler(int sig)
 {
@@ -105,6 +110,7 @@ static void sigint_handler(int sig)
 
 /**
  * sigtstp_handler - Signal handler for SIGTSTP.
+ * sig : Signal number.
  */
 static void sigtstp_handler(int sig)
 {
@@ -114,7 +120,25 @@ static void sigtstp_handler(int sig)
 #endif
 
 /**
+ * do_dup - Dup oldfd to newfd.
+ * oldfd : Old file descriptor.
+ * newfd : New file descriptor.
+ */
+static void do_dup(int oldfd, int newfd)
+{
+    if (oldfd != newfd) {
+        if (dup2(oldfd, newfd) != newfd) {
+            unix_fatal("dup2 error");
+        }
+        if (close(oldfd) < 0) {
+            unix_fatal("close error");
+        }
+    }
+}
+
+/**
  * redirect - Do redirect according to content in redirects.
+ * redirects : To store result of redirect.
  */
 static void redirect(const redirect_t *redirects)
 {
@@ -139,8 +163,8 @@ static void redirect(const redirect_t *redirects)
             if (toredirect != IN) {
                 mode |= O_TRUNC;
             }
-        case APPEND: {
             // case NO and APPEND share the next code
+        case APPEND: {
             int fd = open(redirects->filename, mode, RWRWR);
 
             if (fd < 0) {
@@ -149,14 +173,7 @@ static void redirect(const redirect_t *redirects)
             // toredirect % 4 to convert IN to 0(STDIN_FILENO)
             int newfd = typetofd(toredirect);
 
-            if (fd != newfd) {
-                if (dup2(fd, newfd) != newfd) {
-                    unix_fatal("dup2 error");
-                }
-                if (close(fd) < 0) {
-                    unix_fatal("close error");
-                }
-            }
+            do_dup(fd, newfd);
             break;
         } default:
             break;
@@ -166,23 +183,47 @@ static void redirect(const redirect_t *redirects)
 }
 
 /**
- * copybuf - Copy content in buf to filename.
+ * copybuf - Copy a string to an array.
+ * dest : Array to store string.
+ * buf : String to be copied.
+ * num : Number of bytes to be copied.
  */
-static void copybuf(char *filename, const char *buf, bool isfile)
+static void copybuf(char *dest, const char *buf, size_t num)
 {
     size_t len = strlen(buf);
-    size_t limit = isfile ? NAME_MAX : PATH_MAX;
-    size_t n = len > limit - 1 ? limit - 1 : len;
+    size_t n = len > num ? num : len;
 
-    strncpy(filename, buf, n);
-#ifdef DEBUG
-    printf("%s: length of buffer: %zd\n", filename, n);
-#endif
-    filename[n] = '\0';
+    strncpy(dest, buf, n);
+    dest[n] = '\0';
+}
+
+/**
+ * move_delim - Move delimiter and pointer of buffer when parsing command.
+ * buf : Pointer of buffer.
+ * delimiter : Delimiter to be moved.
+ */
+static void move_delim(char **buf, char **delim)
+{
+    while (**buf == ' ') {
+        ++*buf;
+    }
+    switch (**buf) {
+    case '\'':
+    case '\"':
+        ++*buf;
+        *delim = strchr(*buf, (*buf)[-1]);
+        break;
+    default:
+        *delim = strchr(*buf, ' ');
+        break;
+    }
 }
 
 /**
  * parseline - Parse the cmdline to return the parameters.
+ * buf : Line to be parsed.
+ * argv : Store parameters.
+ * redirects : Store result of redirects.
  * 
  * Note:
  * Assume the length of a line is less than MAXLINE and there's no string
@@ -190,59 +231,30 @@ static void copybuf(char *filename, const char *buf, bool isfile)
  * where parameters are in quotes fully or partly while '-' before them is not,
  * such as `ls -"a"l`. And for redirecting, there should be no space in the item.
  */
-static void parseline(const char *cmdline, char **argv, redirect_t *redirects)
+static void parseline(char *buf, char **argv, redirect_t *redirects)
 {
-#ifdef DEBUG
-    fputs(cmdline, stdout);
-#endif
-    static char array[MAXLINE] = {'\0'};
+    buf[strlen(buf)-1] = ' ';
     // the 2d array to store filenames in current directory when a '*' is the parameter
     static char files[MAXARGS][NAME_MAX];
     static char path[PATH_MAX] = {'\0'};
-    char *buf = array;
-    size_t cmdlen = strlen(cmdline) + 1;
-    size_t n = cmdlen + 1 > MAXLINE ? MAXLINE : cmdlen;
-
-    strncpy(buf, cmdline, n);
-    buf[strlen(cmdline)-1] = ' ';
-    while (*buf == ' ') {
-        ++buf;
-    }
     int argc = 0;
     char *delim = buf;
 
-    switch (*buf) {
-    case '\'':
-    case '\"':
-        ++buf;
-        delim = strchr(buf, buf[-1]);
-        break;
-    default:
-        delim = strchr(buf, ' ');
-        break;
-    }
+    move_delim(&buf, &delim);
     size_t redirect_num = 0;
-    // to be returned for pipe
-    char *next_cmd = NULL;
 
     while (delim != NULL) {
         *delim = '\0';
         enum REDIRECT type;
 
         switch (*buf) {
-        case '|':
-            if (!isspace(buf[1])) {
-                next_cmd = cmdline + ++buf - array;
-                break;
-            }
-            goto do_nothing;
         case '~': {
             char *home = getenv("HOME");
 
             if (home == NULL) {
                 unix_error("cannot find home directory");
             }
-            copybuf(path, home, false);
+            copybuf(path, home, PATH_MAX);
             size_t len = strlen(buf+1) + 1;
             size_t n = len > PATH_MAX / 2 ? PATH_MAX / 2 : len;
 
@@ -252,7 +264,7 @@ static void parseline(const char *cmdline, char **argv, redirect_t *redirects)
         } case '>':
             if (buf[1] == '>') {
                 redirects[redirect_num].type = APPEND | OUT;
-                copybuf(redirects[redirect_num++].filename, &buf[2], true);
+                copybuf(redirects[redirect_num++].filename, &buf[2], NAME_MAX);
                 break;
             } else {
                 // NOTE: this branch shares code with case '<'
@@ -260,7 +272,7 @@ static void parseline(const char *cmdline, char **argv, redirect_t *redirects)
         case '<':
             type = *buf == '>' ? OUT : IN;
             redirects[redirect_num].type = type;
-            copybuf(redirects[redirect_num++].filename, &buf[1], true);
+            copybuf(redirects[redirect_num++].filename, &buf[1], NAME_MAX);
             break;
         case '1':
         case '2':
@@ -271,10 +283,10 @@ static void parseline(const char *cmdline, char **argv, redirect_t *redirects)
                     *redirects[redirect_num++].filename = '\0';
                 } else if (buf[2] == '>') {
                     redirects[redirect_num].type = APPEND | type;
-                    copybuf(redirects[redirect_num++].filename, &buf[3], true);
+                    copybuf(redirects[redirect_num++].filename, &buf[3], NAME_MAX);
                 } else {
                     redirects[redirect_num].type = type;
-                    copybuf(redirects[redirect_num++].filename, &buf[2], true);
+                    copybuf(redirects[redirect_num++].filename, &buf[2], NAME_MAX);
                 }
                 break;
             }
@@ -292,7 +304,7 @@ static void parseline(const char *cmdline, char **argv, redirect_t *redirects)
                 errno = 0;
                 while ((dirp = readdir(dp)) != NULL) {
                     if (dirp->d_name[0] != '.') {
-                        copybuf(files[file_number], dirp->d_name, true);
+                        copybuf(files[file_number], dirp->d_name, NAME_MAX);
                         argv[argc++] = files[file_number++];
                     }
                 }
@@ -310,19 +322,7 @@ do_nothing:
             break;
         }
         buf = delim + 1;
-        while (*buf == ' ') {
-            ++buf;
-        }
-        switch (*buf) {
-        case '\'':
-        case '\"':
-            ++buf;
-            delim = strchr(buf, buf[-1]);
-            break;
-        default:
-            delim = strchr(buf, ' ');
-            break;
-        }
+        move_delim(&buf, &delim);
     }
     argv[argc] = NULL;
     redirects[redirect_num].type = NO;
@@ -330,6 +330,7 @@ do_nothing:
 
 /**
  * builtin_cmd - Judge whether the command is a builtin command.
+ * argv : Command to be judged.
  */
 static bool builtin_cmd(char **argv)
 {
@@ -359,16 +360,36 @@ static bool builtin_cmd(char **argv)
     return false;
 }
 
+/**
+ * split - Split the cmdline according to delim.
+ * buf : The source string to be split.
+ * delim : The character as the delimiter.
+ * argv : Store results of spliting.
+ */
+static size_t split(char *buf, char delim, char *argv[])
+{
+    size_t argc = 0;
+    char *bond = NULL;
+
+    while ((bond = strchr(buf, delim)) != NULL) {
+        *bond = '\0';
+        argv[argc++] = buf;
+        buf = bond + 1;
+    }
+    argv[argc++] = buf;
+    argv[argc] = NULL;
+    return argc;
+}
+
 #ifndef DEBUG
 /**
- * eval - Evaluate the cmdline.
+ * oncmd - Function for case where no pipes occur.
+ * cmdline : The command to be parsed.
+ * argv : Parameter lists to be filled.
+ * redirects: Type of redirect to be filled.
  */
-static void eval(const char *cmdline)
+static void onecmd(char *cmdline, char *argv[], redirect_t redirects[])
 {
-    char *argv[MAXARGS] = {NULL};
-    // to judge whether to redirect later
-    redirect_t redirects[MAXARGS];
-
     parseline(cmdline, argv, redirects);
     if (argv[0] == NULL) {
         return;
@@ -394,11 +415,89 @@ static void eval(const char *cmdline)
 }
 
 /**
+ * eval - Evaluate the cmdline. Parameter firsttime set to judge whether it's
+ *          the top parent process.
+ * cmdline : The command to be evaluated.
+ *
+ * Note: There should be no embedded command in a pipe.
+ */
+static void eval(char *cmdline)
+{
+    char *argv[MAXARGS] = {NULL};
+    size_t pipes_num = split(cmdline, '|', argv) - 1;
+    // to judge whether to redirect later
+    redirect_t redirects[MAXARGS];
+
+    switch (pipes_num) {
+    case 0:
+        onecmd(cmdline, argv, redirects);
+        return;
+        break;
+    default:
+        break;
+    }
+    int pipes[pipes_num][2];
+    pid_t pid;
+    // to tell which command to execute
+    size_t number = pipes_num + 2;
+
+    for (size_t i = 0; i < pipes_num + 1; ++i) {
+        if (i < pipes_num) {
+            if (pipe(pipes[i]) < 0) {
+                unix_fatal("pipe error");
+            }
+        }
+        if ((pid = fork()) <= 0) {
+            number = i;
+            break;
+        }
+    }
+    for (size_t i = 0; i < pipes_num; ++i) {
+        if (i != number) {
+            if (close(pipes[i][1]) < 0) {
+                unix_fatal("close error");
+            }
+        }
+        if (i != number - 1) {
+            if (close(pipes[i][0]) < 0) {
+                unix_fatal("close error");
+            }
+        }
+    }
+    if (pid < 0) {
+        unix_fatal("fork error");
+    } else if (pid == 0) {
+        char *argv_inner[MAXARGS] = {NULL};
+
+        parseline(argv[number], argv_inner, redirects);
+        if (argv_inner[0] == NULL) {
+            return;
+        }
+        redirect(redirects);
+        if (number < pipes_num) {
+            do_dup(pipes[number][1], STDOUT_FILENO);
+        }
+        if (number > 0) {
+            do_dup(pipes[number-1][0], STDIN_FILENO);
+        }
+        if (execvp(argv_inner[0], argv_inner) < 0) {
+            printf("%s: Command not found.\n", argv_inner[0]);
+            exit(3);
+        }
+    } else {
+        inchild = true;
+        while (wait(NULL) > 0) {
+            ;
+        }
+    }
+}
+
+/**
  * main - The shell's main loop.
  */
 int main(void)
 {
-    char *name = getenv("LOGNAME");
+    const char *name = getenv("LOGNAME");
 
     if (name == NULL) {
         name = "";
@@ -407,19 +506,18 @@ int main(void)
     strcat(prompt, ":");
     mysignal(SIGINT, sigint_handler);
     mysignal(SIGTSTP, sigtstp_handler);
-    char cmdline[MAXLINE] = {'\0'};
 
     while (true) {
         set_prompt();
         fputs(prompt, stdout);
-        if (fgets(cmdline, MAXLINE, stdin) == NULL && ferror(stdin)) {
+        if (fgets(cmd, MAXLINE, stdin) == NULL && ferror(stdin)) {
             app_fatal("fgets error");
         }
         if (feof(stdin)) {
             fputs("\n", stdout);
             return 0;
         }
-        eval(cmdline);
+        eval(cmd);
         inchild = false;
     }
     return 0;
