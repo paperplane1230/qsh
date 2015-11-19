@@ -9,8 +9,9 @@ START_TEST(test_parseline)
     char *argv[MAXARGS] = {NULL};
     // to judge whether to redirect later
     redirect_t redirects[MAXARGS];
+    bool bg = parseline(cmd, argv, redirects);
 
-    parseline(cmd, argv, redirects);
+    ck_assert_int_eq(bg, 0);
     ck_assert_ptr_ne(redirects, NULL);
     fputs("\n", stdout);
     fputs("Redirects begin:\n", stdout);
@@ -31,8 +32,9 @@ START_TEST(test_parseline)
     ck_assert_int_eq(redirects[3].type, ERR | CLOSE);
     ck_assert_int_eq(redirects[4].type, NO);
 
-    copybuf(cmd, "cd ~\n", MAXLINE);
-    parseline(cmd, argv, redirects);
+    copybuf(cmd, "cd ~ &\n", MAXLINE);
+    bg = parseline(cmd, argv, redirects);
+    ck_assert_int_eq(1, bg);
     ck_assert_str_eq(argv[0], "cd");
     ck_assert_str_eq(argv[1], "/home/qyl");
 
@@ -59,6 +61,11 @@ START_TEST(test_split)
     ck_assert_str_eq(argv[1], "less <a.txt ");
     ck_assert_str_eq(argv[2], "sort -b\n");
     ck_assert_ptr_eq(argv[3], NULL);
+
+    copybuf(cmd, "cat", MAXLINE);
+    split(cmd, ';', argv);
+    ck_assert_str_eq(argv[0], "cat");
+    ck_assert_ptr_eq(argv[1], NULL);
 }
 END_TEST
 

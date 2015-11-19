@@ -9,7 +9,6 @@
 #include <fcntl.h>
 #include <string.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <ctype.h>
 #include <sys/wait.h>
 #include <stdio.h>
@@ -24,6 +23,7 @@ static bool inchild = false;
 #endif
 
 static char cmd[MAXLINE] = {'\0'};
+job_t jobs[MAXARGS];
 
 #ifndef DEBUG
 /**
@@ -85,7 +85,7 @@ static void set_prompt(void)
     if (time(&t) < 0) {
         unix_fatal("time error");
     }
-    strftime(timebuf+1, timelen, "%T", gmtime(&t));
+    strftime(timebuf+1, timelen, "%T", localtime(&t));
     strcat(path_place, timebuf);
     strcat(path_place, "> ");
     free(dirname);
@@ -150,12 +150,12 @@ static void redirect(const redirect_t *redirects)
         continue;
 #endif
         // get IN, OUT, or ERR
-        int toredirect = redirects->type & 7;
+        int toredirect = get_direction(redirects->type);
         mode_t mode = toredirect == IN ? O_RDONLY : O_WRONLY | O_CREAT | O_APPEND;
 
-        switch (redirects->type & 24) {
+        switch (redirect_type(redirects->type)) {
         case CLOSE:
-            if (close(typetofd(toredirect)) < 0) {
+            if (close(type2fd(toredirect)) < 0) {
                 unix_fatal("close error");
             }
             break;
@@ -165,13 +165,20 @@ static void redirect(const redirect_t *redirects)
             }
             // case NO and APPEND share the next code
         case APPEND: {
-            int fd = open(redirects->filename, mode, RWRWR);
+            int fd = 0;
 
+            // it seems to have different semantics with normal shell
+            if (strcmp(redirects->filename, "&1") == 0) {
+                fd = STDOUT_FILENO;
+            } else if (strcmp(redirects->filename, "&2") == 0) {
+                fd = STDERR_FILENO;
+            } else {
+                fd = open(redirects->filename, mode, RWRWR);
+            }
             if (fd < 0) {
                 unix_fatal(redirects->filename);
             }
-            // toredirect % 4 to convert IN to 0(STDIN_FILENO)
-            int newfd = typetofd(toredirect);
+            int newfd = type2fd(toredirect);
 
             do_dup(fd, newfd);
             break;
@@ -225,13 +232,13 @@ static void move_delim(char **buf, char **delim)
  * argv : Store parameters.
  * redirects : Store result of redirects.
  * 
- * Note:
+ * NOTE:
  * Assume the length of a line is less than MAXLINE and there's no string
  * consisting of more than one line. And it cannot deal with situations
  * where parameters are in quotes fully or partly while '-' before them is not,
  * such as `ls -"a"l`. And for redirecting, there should be no space in the item.
  */
-static void parseline(char *buf, char **argv, redirect_t *redirects)
+static bool parseline(char *buf, char **argv, redirect_t *redirects)
 {
     buf[strlen(buf)-1] = ' ';
     // the 2d array to store filenames in current directory when a '*' is the parameter
@@ -326,7 +333,60 @@ do_nothing:
     }
     argv[argc] = NULL;
     redirects[redirect_num].type = NO;
+    if (argc == 0) {
+        return false;
+    }
+    bool bg = false;
+
+    if ((bg = (*argv[argc-1] == '&'))) {
+        argv[--argc] = NULL;
+    }
+    return bg;
 }
+
+#ifndef DEBUG
+/**
+ * addjob - Add a job to the job list.
+ * job : Job to be added.
+ * pid : Pid of the job.
+ * state : Background or foreground.
+ * cmd : Name of command.
+ */
+static void addjob(job_t *jobs, pid_t pid, enum STATE state, const char *cmd)
+{
+    for (size_t i = 0; i < MAXARGS; ++i) {
+        if (jobs[i].pid == 0) {
+            jobs[i].pid = pid;
+            jobs[i].jid = i + 1;
+            jobs[i].state = state;
+            copybuf(jobs[i].cmd.name, cmd, MAXLINE);
+            return;
+        }
+    }
+    printf("Too many jobs now!");
+}
+#endif
+
+#ifndef DEBUG
+/**
+ * listjobs - List present jobs.
+ * jobs - Jobs to be printed.
+ */
+static void listjobs(const job_t jobs[])
+{
+    for (size_t i = 0; i < MAXARGS; ++i) {
+        if (jobs[i].pid != 0) {
+            printf("[%d]%-30s%-s", jobs[i].jid, state2str(jobs[i].state),
+                    jobs[i].cmd.name);
+            const job_cmd *c = &(jobs[i].cmd);
+
+            while ((c = c->next) != NULL) {
+                printf("\t\t\t\t\t\t\t\t%-30s", c->name);
+            }
+        }
+    }
+}
+#endif
 
 /**
  * builtin_cmd - Judge whether the command is a builtin command.
@@ -356,6 +416,9 @@ static bool builtin_cmd(char **argv)
             }
         }
         return true;
+    } else if (strcmp(*argv, "jobs") == 0) {
+        /* listjobs(jobs); */
+        return true;
     }
     return false;
 }
@@ -366,13 +429,17 @@ static bool builtin_cmd(char **argv)
  * delim : The character as the delimiter.
  * argv : Store results of spliting.
  */
-static size_t split(char *buf, char delim, char *argv[])
+static int split(char *buf, char delim, char *argv[])
 {
     size_t argc = 0;
     char *bond = NULL;
 
     while ((bond = strchr(buf, delim)) != NULL) {
         *bond = '\0';
+        if (!isspace(bond[-1])) {
+            app_error("There must be space before a delimiter.");
+            return -1;
+        }
         argv[argc++] = buf;
         buf = bond + 1;
     }
@@ -383,65 +450,35 @@ static size_t split(char *buf, char delim, char *argv[])
 
 #ifndef DEBUG
 /**
- * oncmd - Function for case where no pipes occur.
- * cmdline : The command to be parsed.
- * argv : Parameter lists to be filled.
- * redirects: Type of redirect to be filled.
- */
-static void onecmd(char *cmdline, char *argv[], redirect_t redirects[])
-{
-    parseline(cmdline, argv, redirects);
-    if (argv[0] == NULL) {
-        return;
-    }
-    if (!builtin_cmd(argv)) {
-        pid_t pid;
-
-        if ((pid = fork()) == 0) {
-            redirect(redirects);
-            if (execvp(argv[0], argv) < 0) {
-                printf("%s: Command not found.\n", argv[0]);
-                exit(3);
-            }
-        } else if (pid < 0) {
-            unix_fatal("fork error");
-        } else {
-            inchild = true;
-            if (wait(NULL) < 0) {
-                unix_fatal("wait error");
-            }
-        }
-    }
-}
-
-/**
  * eval - Evaluate the cmdline. Parameter firsttime set to judge whether it's
  *          the top parent process.
  * cmdline : The command to be evaluated.
  *
- * Note: There should be no embedded command in a pipe.
+ * NOTE: There should be no embedded command in a pipe.
  */
 static void eval(char *cmdline)
 {
-    char *argv[MAXARGS] = {NULL};
-    size_t pipes_num = split(cmdline, '|', argv) - 1;
+    char *cmds[MAXARGS] = {NULL};
+    int pipes_num = split(cmdline, '|', cmds) - 1;
+
+    if (pipes_num < 0) {
+        return;
+    }
     // to judge whether to redirect later
     redirect_t redirects[MAXARGS];
-
-    switch (pipes_num) {
-    case 0:
-        onecmd(cmdline, argv, redirects);
-        return;
-        break;
-    default:
-        break;
-    }
     int pipes[pipes_num][2];
-    pid_t pid;
     // to tell which command to execute
-    size_t number = pipes_num + 2;
+    int number = pipes_num + 2;
+    pid_t pid;
+    char *argv[MAXARGS] = {NULL};
 
-    for (size_t i = 0; i < pipes_num + 1; ++i) {
+    if (pipes_num == 0) {
+        parseline(cmds[0], argv, redirects);
+        if (argv[0] == NULL || builtin_cmd(argv)) {
+            return;
+        }
+    }
+    for (int i = 0; i < pipes_num + 1; ++i) {
         if (i < pipes_num) {
             if (pipe(pipes[i]) < 0) {
                 unix_fatal("pipe error");
@@ -452,26 +489,22 @@ static void eval(char *cmdline)
             break;
         }
     }
-    for (size_t i = 0; i < pipes_num; ++i) {
+    for (int i = 0; i < pipes_num; ++i) {
         if (i != number) {
-            if (close(pipes[i][1]) < 0) {
-                unix_fatal("close error");
-            }
+            close(pipes[i][1]);
         }
         if (i != number - 1) {
-            if (close(pipes[i][0]) < 0) {
-                unix_fatal("close error");
-            }
+            close(pipes[i][0]);
         }
     }
     if (pid < 0) {
         unix_fatal("fork error");
     } else if (pid == 0) {
-        char *argv_inner[MAXARGS] = {NULL};
-
-        parseline(argv[number], argv_inner, redirects);
-        if (argv_inner[0] == NULL) {
-            return;
+        if (pipes_num > 0) {
+            parseline(cmds[number], argv, redirects);
+            if (argv[0] == NULL) {
+                app_fatal("no content for pipe");
+            }
         }
         redirect(redirects);
         if (number < pipes_num) {
@@ -480,8 +513,8 @@ static void eval(char *cmdline)
         if (number > 0) {
             do_dup(pipes[number-1][0], STDIN_FILENO);
         }
-        if (execvp(argv_inner[0], argv_inner) < 0) {
-            printf("%s: Command not found.\n", argv_inner[0]);
+        if (execvp(argv[0], argv) < 0) {
+            printf("%s: Command not found.\n", argv[0]);
             exit(3);
         }
     } else {
@@ -493,11 +526,23 @@ static void eval(char *cmdline)
 }
 
 /**
+ * initjobs - Initialize jobs for shell.
+ * jobs : Jobs to be initialized.
+ */
+static void initjobs(job_t jobs[])
+{
+    for (size_t i = 0; i < MAXARGS; ++i) {
+        clearjob(&jobs[i]);
+    }
+}
+
+/**
  * main - The shell's main loop.
  */
 int main(void)
 {
     const char *name = getenv("LOGNAME");
+    char *args[MAXARGS] = {NULL};
 
     if (name == NULL) {
         name = "";
@@ -507,6 +552,7 @@ int main(void)
     mysignal(SIGINT, sigint_handler);
     mysignal(SIGTSTP, sigtstp_handler);
 
+    /* initjobs(jobs); */
     while (true) {
         set_prompt();
         fputs(prompt, stdout);
@@ -517,7 +563,12 @@ int main(void)
             fputs("\n", stdout);
             return 0;
         }
-        eval(cmd);
+        if (split(cmd, ';', args) > 0) {
+            // NOTE: There must be space before ';'
+            for (size_t i = 0; args[i] != NULL; ++i) {
+                eval(args[i]);
+            }
+        }
         inchild = false;
     }
     return 0;
