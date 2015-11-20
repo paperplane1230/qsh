@@ -367,7 +367,6 @@ static void addjob(job_t *jobs, pid_t pid, enum STATE state, const char *cmd)
 }
 #endif
 
-#ifndef DEBUG
 /**
  * listjobs - List present jobs.
  * jobs - Jobs to be printed.
@@ -386,7 +385,6 @@ static void listjobs(const job_t jobs[])
         }
     }
 }
-#endif
 
 /**
  * builtin_cmd - Judge whether the command is a builtin command.
@@ -417,7 +415,7 @@ static bool builtin_cmd(char **argv)
         }
         return true;
     } else if (strcmp(*argv, "jobs") == 0) {
-        /* listjobs(jobs); */
+        listjobs(jobs);
         return true;
     }
     return false;
@@ -450,6 +448,24 @@ static int split(char *buf, char delim, char *argv[])
 
 #ifndef DEBUG
 /**
+ * closepipes - Close useless pipes in a specific process.
+ * pipes : Pipes to be closed.
+ * pipes_num : Number of pipes.
+ * number : The number of specific process.
+ */
+static void closepipes(int pipes[][2], int pipes_num, int number)
+{
+    for (int i = 0; i < pipes_num; ++i) {
+        if (i != number) {
+            close(pipes[i][1]);
+        }
+        if (i != number - 1) {
+            close(pipes[i][0]);
+        }
+    }
+}
+
+/**
  * eval - Evaluate the cmdline. Parameter firsttime set to judge whether it's
  *          the top parent process.
  * cmdline : The command to be evaluated.
@@ -471,9 +487,10 @@ static void eval(char *cmdline)
     int number = pipes_num + 2;
     pid_t pid;
     char *argv[MAXARGS] = {NULL};
+    bool bg = false;
 
     if (pipes_num == 0) {
-        parseline(cmds[0], argv, redirects);
+        bg = parseline(cmds[0], argv, redirects);
         if (argv[0] == NULL || builtin_cmd(argv)) {
             return;
         }
@@ -489,19 +506,12 @@ static void eval(char *cmdline)
             break;
         }
     }
-    for (int i = 0; i < pipes_num; ++i) {
-        if (i != number) {
-            close(pipes[i][1]);
-        }
-        if (i != number - 1) {
-            close(pipes[i][0]);
-        }
-    }
+    closepipes(pipes, pipes_num, number);
     if (pid < 0) {
         unix_fatal("fork error");
     } else if (pid == 0) {
         if (pipes_num > 0) {
-            parseline(cmds[number], argv, redirects);
+            bg = parseline(cmds[number], argv, redirects);
             if (argv[0] == NULL) {
                 app_fatal("no content for pipe");
             }
@@ -517,11 +527,10 @@ static void eval(char *cmdline)
             printf("%s: Command not found.\n", argv[0]);
             exit(3);
         }
-    } else {
-        inchild = true;
-        while (wait(NULL) > 0) {
-            ;
-        }
+    }
+    inchild = true;
+    while (wait(NULL) > 0) {
+        ;
     }
 }
 
@@ -552,7 +561,7 @@ int main(void)
     mysignal(SIGINT, sigint_handler);
     mysignal(SIGTSTP, sigtstp_handler);
 
-    /* initjobs(jobs); */
+    initjobs(jobs);
     while (true) {
         set_prompt();
         fputs(prompt, stdout);
