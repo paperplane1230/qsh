@@ -9,9 +9,8 @@ START_TEST(test_parseline)
     char *argv[MAXARGS] = {NULL};
     // to judge whether to redirect later
     redirect_t redirects[MAXARGS];
-    bool bg = parseline(cmd, argv, redirects);
+    parseline(cmd, argv, redirects);
 
-    ck_assert_int_eq(bg, 0);
     ck_assert_ptr_ne(redirects, NULL);
     fputs("\n", stdout);
     fputs("Redirects begin:\n", stdout);
@@ -33,8 +32,7 @@ START_TEST(test_parseline)
     ck_assert_int_eq(redirects[4].type, NO);
 
     copybuf(cmd, "cd ~ &\n", MAXLINE);
-    bg = parseline(cmd, argv, redirects);
-    ck_assert_int_eq(1, bg);
+    parseline(cmd, argv, redirects);
     ck_assert_str_eq(argv[0], "cd");
     ck_assert_str_eq(argv[1], "/home/qyl");
 
@@ -79,6 +77,19 @@ START_TEST(test_builtin_cmd)
 }
 END_TEST
 
+START_TEST(test_preprocess)
+{
+    char s[256] = "ls |cat &";
+
+    ck_assert_msg(preprocess(s), "s is on background");
+    ck_assert_str_eq(s, "ls |cat  ");
+    char b[32] = "cat lse";
+
+    ck_assert_msg(!preprocess(b), "s is on foreground");
+    ck_assert_str_eq(b, "cat lse");
+}
+END_TEST
+
 Suite *main_suite(void)
 {
     Suite *s = suite_create("main");
@@ -88,6 +99,7 @@ Suite *main_suite(void)
     tcase_add_test(tc_core, test_split);
     tcase_add_test(tc_core, test_parseline);
     tcase_add_test(tc_core, test_builtin_cmd);
+    tcase_add_test(tc_core, test_preprocess);
     suite_add_tcase(s, tc_core);
     return s;
 }

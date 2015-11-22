@@ -5,10 +5,12 @@
 
 #include <limits.h>
 #include <unistd.h>
+#include <stdio.h>
 
 #define UNUSED(x) (void) (x)
 
 #define MAXLINE 1024
+#define PID_MAX 32768
 #define MAXARGS 128
 
 // set new file mode
@@ -17,23 +19,19 @@
 // to the type of redirecting
 enum REDIRECT { NO = 0, OUT = 1, ERR = 2, IN = 4, CLOSE = 8, APPEND = 16, };
 
-enum STATE { UNDEF, FG, BG, STOP, DONE, };
+enum STATE { UNDEF, FG, BG, STOP, DONE, KILLED, CONTINUED, };
 
 typedef struct _redirect_t {
     char filename[NAME_MAX];
     unsigned type;
 } redirect_t;
 
-typedef struct _job_cmd {
-    char name[MAXLINE];
-    struct _job_cmd *next;
-} job_cmd;
-
 typedef struct _job_t {
-    job_cmd cmd;
+    char name[MAXLINE];
     pid_t pid;
     enum STATE state;
     unsigned jid;
+    unsigned num;
 } job_t;
 
 typedef void handler_t(int);
@@ -71,11 +69,14 @@ static inline int redirect_type(const enum REDIRECT redirect)
  */
 static inline void clearjob(job_t *job)
 {
-    job->cmd.name[0] = '\0';
-    job->cmd.next = NULL;
-    job->state = UNDEF;
-    job->pid = 0;
-    job->jid = 0;
+    if (job->num != 0) {
+        if (--job->num == 0) {
+            job->name[0] = '\0';
+            job->state = UNDEF;
+            job->jid = 0;
+            job->pid = 0;
+        }
+    }
 }
 
 /**
@@ -85,6 +86,9 @@ static inline void clearjob(job_t *job)
 static inline const char *state2str(const enum STATE state)
 {
     switch (state) {
+    case FG:
+        return "Foreground";
+        break;
     case BG:
         return "Running";
         break;
@@ -93,8 +97,24 @@ static inline const char *state2str(const enum STATE state)
         break;
     case DONE:
         return "Done";
+        break;
+    case KILLED:
+        return "Killed";
+        break;
+    case CONTINUED:
+        return "Continued";
+        break;
     default:
         return NULL;
         break;
     }
 }
+
+/**
+ * print_job : Print information of a job.
+ */
+static inline void print_job(const job_t *job, const enum STATE state)
+{
+    printf("[%u] (%d) %s %s", job->jid, job->pid, state2str(state), job->name);
+}
+

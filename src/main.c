@@ -4,7 +4,6 @@
 #include "error.h"
 #include "main.h"
 #include <dirent.h>
-#include <stdio.h>
 #include <stdbool.h>
 #include <fcntl.h>
 #include <string.h>
@@ -17,20 +16,17 @@
 
 #ifndef DEBUG
 static char prompt[MAXLINE];
-
-// judge whether to print prompt when dealing with SIGINT
-static bool inchild = false;
+static char original_cmd[MAXLINE];
+static job_t jobs[MAXARGS];
+static pid_t grps[PID_MAX];
 #endif
 
-static char cmd[MAXLINE] = {'\0'};
-job_t jobs[MAXARGS];
+static char cmd[MAXLINE];
 
 #ifndef DEBUG
 /**
  * signal - Wrapper for the sigaction function. Reliable version of signal(),
  *          using POSIX sigaction().
- * signum : Signal to be handled.
- * handler : Function to be called.
  */
 static handler_t *mysignal(int signum, handler_t *handler)
 {
@@ -92,37 +88,144 @@ static void set_prompt(void)
     dirname = NULL;
 }
 
+#ifndef DEBUG
 /**
- * sigint_handler - Signal handler for SIGINT.
- * sig : Signal number.
+ * getjob - Get job from the job list.
+ * jobs : The job list.
+ * jid : The jid of job.
  */
-static void sigint_handler(int sig)
+static job_t *getjob(job_t jobs[], unsigned jid)
 {
-    // the sig parameter is not used
-    UNUSED(sig);
-    fputs("\n", stdout);
-    if (!inchild) {
-        set_prompt();
-        fputs(prompt, stdout);
-        fflush(stdout);
+    if (jid < 1) {
+        return NULL;
+    }
+    for (size_t i = 0; i < MAXARGS; ++i) {
+        if (jobs[i].jid == jid) {
+            return &jobs[i];
+        }
+    }
+    return NULL;
+}
+#endif
+
+#ifndef DEBUG
+/**
+ * fgpid - Find the pid of foreground process.
+ */
+static pid_t fgpid(const job_t jobs[])
+{
+    for (size_t i = 0; i < MAXARGS; ++i) {
+        if (jobs[i].state == FG) {
+            return jobs[i].pid;
+        }
+    }
+    return 0;
+}
+
+/**
+ * pid2jid - Return jid corresponding to pid.
+ * pid : Pid that the jid corresponds to.
+ */
+static unsigned pid2jid(int pid)
+{
+    if (pid < 1) {
+        return 0;
+    }
+    for (size_t i = 0; i < MAXARGS; ++i) {
+        if (jobs[i].pid == pid) {
+            return jobs[i].jid;
+        }
+    }
+    return 0;
+}
+#endif
+
+/**
+ * delete_job : Delete a job from the list.
+ */
+static void delete_job(job_t jobs[], pid_t pid)
+{
+    if (pid < 1) {
+        return;
+    }
+    for (size_t i = 0; i < MAXARGS; ++i) {
+        if (jobs[i].pid == pid) {
+            clearjob(&jobs[i]);
+            return;
+        }
     }
 }
 
 /**
- * sigtstp_handler - Signal handler for SIGTSTP.
- * sig : Signal number.
+ * set_terminal - Modify pgid of a control terminal.
+ * pgid : The control terminal's new pgid.
  */
-static void sigtstp_handler(int sig)
+static void set_terminal(pid_t pgid)
 {
-    // the sig parameter is not used
+    if (tcsetpgrp(STDIN_FILENO, pgid) < 0) {
+        unix_fatal("tcsetpgrp error");
+    }
+    if (tcsetpgrp(STDOUT_FILENO, pgid) < 0) {
+        unix_fatal("tcsetpgrp error");
+    }
+    if (tcsetpgrp(STDERR_FILENO, pgid) < 0) {
+        unix_fatal("tcsetpgrp error");
+    }
+}
+
+/**
+ * sigchld_handler - Handler of SIGCHLD.
+ */
+static void sigchld_handler(int sig)
+{
+    int status = 0;
+    pid_t pid;
+
+    while ((pid = waitpid(-1, &status, WCONTINUED | WNOHANG | WUNTRACED)) > 0) {
+        job_t *job = getjob(jobs, pid2jid(grps[pid]));
+
+        if (WIFSTOPPED(status)) {
+            if (job->state == FG) {
+                fputs("\n", stdout);
+                print_job(job, STOP);
+            }
+            job->state = STOP;
+        } else if (WIFSIGNALED(status)) {
+            sig = WTERMSIG(status);
+            if (sig == SIGKILL) {
+                print_job(job, KILLED);
+            } else if (sig == SIGINT) {
+                fputs("\n", stdout);
+            }
+            delete_job(jobs, grps[pid]);
+        } else if (WIFCONTINUED(status)) {
+            if (job->state != BG) {
+                print_job(job, CONTINUED);
+            }
+        } else {
+            if (job->state != FG && grps[pid] == pid) {
+                print_job(job, DONE);
+            }
+            delete_job(jobs, grps[pid]);
+        }
+    }
+}
+
+/**
+ * sendsig - Send signal to specific process group.
+ */
+static void sendsig(int sig)
+{
     UNUSED(sig);
+    fputs("\n", stdout);
+    set_prompt();
+    fputs(prompt, stdout);
+    fflush(stdout);
 }
 #endif
 
 /**
  * do_dup - Dup oldfd to newfd.
- * oldfd : Old file descriptor.
- * newfd : New file descriptor.
  */
 static void do_dup(int oldfd, int newfd)
 {
@@ -211,7 +314,7 @@ static void copybuf(char *dest, const char *buf, size_t num)
  */
 static void move_delim(char **buf, char **delim)
 {
-    while (**buf == ' ') {
+    while (**buf == ' ' || **buf == '\t') {
         ++*buf;
     }
     switch (**buf) {
@@ -228,9 +331,6 @@ static void move_delim(char **buf, char **delim)
 
 /**
  * parseline - Parse the cmdline to return the parameters.
- * buf : Line to be parsed.
- * argv : Store parameters.
- * redirects : Store result of redirects.
  * 
  * NOTE:
  * Assume the length of a line is less than MAXLINE and there's no string
@@ -238,7 +338,7 @@ static void move_delim(char **buf, char **delim)
  * where parameters are in quotes fully or partly while '-' before them is not,
  * such as `ls -"a"l`. And for redirecting, there should be no space in the item.
  */
-static bool parseline(char *buf, char **argv, redirect_t *redirects)
+static void parseline(char *buf, char **argv, redirect_t *redirects)
 {
     buf[strlen(buf)-1] = ' ';
     // the 2d array to store filenames in current directory when a '*' is the parameter
@@ -333,15 +433,6 @@ do_nothing:
     }
     argv[argc] = NULL;
     redirects[redirect_num].type = NO;
-    if (argc == 0) {
-        return false;
-    }
-    bool bg = false;
-
-    if ((bg = (*argv[argc-1] == '&'))) {
-        argv[--argc] = NULL;
-    }
-    return bg;
 }
 
 #ifndef DEBUG
@@ -352,20 +443,35 @@ do_nothing:
  * state : Background or foreground.
  * cmd : Name of command.
  */
-static void addjob(job_t *jobs, pid_t pid, enum STATE state, const char *cmd)
+static void addjob(job_t *jobs, pid_t pid, enum STATE state, const char *cmd, unsigned num)
 {
+    if (pid < 1) {
+        return;
+    }
     for (size_t i = 0; i < MAXARGS; ++i) {
         if (jobs[i].pid == 0) {
+            jobs[i].num = num;
             jobs[i].pid = pid;
             jobs[i].jid = i + 1;
             jobs[i].state = state;
-            copybuf(jobs[i].cmd.name, cmd, MAXLINE);
+            copybuf(jobs[i].name, cmd, MAXLINE);
             return;
         }
     }
     printf("Too many jobs now!");
 }
 #endif
+
+#ifndef DEBUG
+/**
+ * waitfg - Wait process in foreground to stop.
+ */
+static void waitfg(const job_t jobs[])
+{
+    while (fgpid(jobs) != 0) {
+        pause();
+    }
+}
 
 /**
  * listjobs - List present jobs.
@@ -375,20 +481,60 @@ static void listjobs(const job_t jobs[])
 {
     for (size_t i = 0; i < MAXARGS; ++i) {
         if (jobs[i].pid != 0) {
-            printf("[%d]%-30s%-s", jobs[i].jid, state2str(jobs[i].state),
-                    jobs[i].cmd.name);
-            const job_cmd *c = &(jobs[i].cmd);
-
-            while ((c = c->next) != NULL) {
-                printf("\t\t\t\t\t\t\t\t%-30s", c->name);
-            }
+            print_job(&jobs[i], jobs[i].state);
         }
     }
 }
 
 /**
+ * do_bgfg - Execute bg of fg command.
+ */
+static void do_bgfg(char *argv[], job_t jobs[])
+{
+    int jid = 1;
+
+    if (argv[1] != NULL) {
+        if (argv[1][0] != '%') {
+            fputs("There must be '%%' before job id.\n", stdout);
+            return;
+        }
+        jid = atoi(argv[1] + 1);
+    }
+    job_t *job = getjob(jobs, jid);
+
+    if (job == NULL) {
+        printf("%%%d: No such job.\n", jid);
+        return;
+    }
+    pid_t pid = job->pid;
+
+    switch (strcmp(argv[0], "bg")) {
+    case 0:
+        if (job->state == BG) {
+            app_error("Job already in background.");
+            return;
+        }
+        job->state = BG;
+        if (kill(-pid, SIGCONT) < 0) {
+            unix_fatal("kill error");
+        }
+        print_job(job, CONTINUED);
+        break;
+    default:
+        job->state = FG;
+        set_terminal(job->pid);
+        if (kill(-pid, SIGCONT) < 0) {
+            unix_fatal("kill error");
+        }
+        waitfg(jobs);
+        set_terminal(getpid());
+        break;
+    }
+}
+#endif
+
+/**
  * builtin_cmd - Judge whether the command is a builtin command.
- * argv : Command to be judged.
  */
 static bool builtin_cmd(char **argv)
 {
@@ -415,17 +561,41 @@ static bool builtin_cmd(char **argv)
         }
         return true;
     } else if (strcmp(*argv, "jobs") == 0) {
+#ifndef DEBUG
         listjobs(jobs);
+#endif
+        return true;
+    } else if (strcmp(*argv, "fg") == 0 || strcmp(*argv, "bg") == 0) {
+#ifndef DEBUG
+        do_bgfg(argv, jobs);
+#endif
         return true;
     }
     return false;
 }
 
 /**
+ * preprocess - Judge whether it's run on background.
+ */
+static bool preprocess(char *cmdline)
+{
+    char *tmp = cmdline + strlen(cmdline);
+
+    while (isspace(*--tmp) && tmp >= cmdline) {
+        ;
+    }
+    if (tmp < cmdline) {
+        return false;
+    }
+    if (*tmp == '&') {
+        *tmp = ' ';
+        return true;;
+    }
+    return false;
+}
+
+/**
  * split - Split the cmdline according to delim.
- * buf : The source string to be split.
- * delim : The character as the delimiter.
- * argv : Store results of spliting.
  */
 static int split(char *buf, char delim, char *argv[])
 {
@@ -466,15 +636,111 @@ static void closepipes(int pipes[][2], int pipes_num, int number)
 }
 
 /**
+ * block_child - Block signal.
+ */
+static void block_sig(sigset_t *mask)
+{
+    if (sigemptyset(mask) < 0) {
+        unix_fatal("sigemptyset error");
+    }
+    if (sigaddset(mask, SIGCHLD) < 0) {
+        unix_fatal("sigadset error");
+    }
+    if (sigprocmask(SIG_BLOCK, mask, NULL) < 0) {
+        unix_fatal("sigprocmask error");
+    }
+}
+
+/**
+ * unblock_sig : Unblock signals in mask.
+ * mask : Signals to be unblocked.
+ */
+static void unblock_sig(sigset_t *mask)
+{
+    if (sigprocmask(SIG_UNBLOCK, mask, NULL) < 0) {
+        unix_fatal("sigprocmask error");
+    }
+}
+
+/**
+ * connect_pipes - Connect stdin and stdout of this process to related pipes.
+ */
+static void connect_pipes(int number, int pipes[][2], int pipes_num)
+{
+    if (number < pipes_num) {
+        do_dup(pipes[number][1], STDOUT_FILENO);
+    }
+    if (number > 0) {
+        do_dup(pipes[number-1][0], STDIN_FILENO);
+    }
+}
+
+/**
+ * set_group - Call setpgid in the parent process.
+ */
+static void set_group(const pid_t pids[], int sum)
+{
+    for (int i = 0; i < sum; ++i) {
+        grps[pids[i]] = pids[0];
+        if (setpgid(pids[i], pids[0]) < 0 && errno != EACCES) {
+            unix_fatal("setpgid error");
+        }
+    }
+}
+
+/**
+ * add_newjob - Add a new job in foreground or background.
+ */
+static void add_newjob(int pid, bool bg, unsigned num, sigset_t *mask)
+{
+    if (!bg) {
+        addjob(jobs, pid, FG, original_cmd, num);
+        set_terminal(pid);
+        unblock_sig(mask);
+        waitfg(jobs);
+        set_terminal(getpid());
+    } else {
+        addjob(jobs, pid, BG, original_cmd, num);
+        unblock_sig(mask);
+        printf("[%u] %d %s", pid2jid(pid), pid, original_cmd);
+    }
+}
+
+/**
+ * change_ttyio - Change SIGTTIN and SIGTTOU's handling way.
+ */
+static void change_ttyio(handler_t *handle_way)
+{
+    mysignal(SIGTTIN, handle_way);
+    mysignal(SIGTTOU, handle_way);
+}
+
+/**
+ * setpgid_pipe - Set pgid for a process in a pipe.
+ */
+static void setpgid_pipe(pid_t pids[], int number)
+{
+    if (number == 0) {
+        pids[0] = getpid();
+    }
+    grps[getpid()] = pids[0];
+    if (setpgid(getpid(), pids[0]) < 0) {
+        unix_fatal("setpgid error");
+    }
+}
+
+/**
  * eval - Evaluate the cmdline. Parameter firsttime set to judge whether it's
  *          the top parent process.
- * cmdline : The command to be evaluated.
  *
  * NOTE: There should be no embedded command in a pipe.
  */
 static void eval(char *cmdline)
 {
     char *cmds[MAXARGS] = {NULL};
+    bool bg = preprocess(cmdline);
+
+    copybuf(original_cmd, cmdline, MAXLINE);
     int pipes_num = split(cmdline, '|', cmds) - 1;
 
     if (pipes_num < 0) {
@@ -484,63 +750,66 @@ static void eval(char *cmdline)
     redirect_t redirects[MAXARGS];
     int pipes[pipes_num][2];
     // to tell which command to execute
-    int number = pipes_num + 2;
-    pid_t pid;
+    int number = pipes_num + 1;
+    pid_t pids[pipes_num+2];
+
+    pids[pipes_num+1] = getpid();
     char *argv[MAXARGS] = {NULL};
-    bool bg = false;
 
     if (pipes_num == 0) {
-        bg = parseline(cmds[0], argv, redirects);
+        parseline(cmds[0], argv, redirects);
         if (argv[0] == NULL || builtin_cmd(argv)) {
             return;
         }
     }
+    sigset_t mask;
+
+    block_sig(&mask);
     for (int i = 0; i < pipes_num + 1; ++i) {
         if (i < pipes_num) {
             if (pipe(pipes[i]) < 0) {
                 unix_fatal("pipe error");
             }
         }
-        if ((pid = fork()) <= 0) {
+        if ((pids[i] = fork()) <= 0) {
             number = i;
             break;
         }
     }
     closepipes(pipes, pipes_num, number);
-    if (pid < 0) {
+    if (pids[number] < 0) {
         unix_fatal("fork error");
-    } else if (pid == 0) {
+    } else if (pids[number] == 0) {
+        setpgid_pipe(pids, number);
+        if (number == 0 && !bg) {
+            set_terminal(getpid());
+        }
+        change_ttyio(SIG_DFL);
         if (pipes_num > 0) {
-            bg = parseline(cmds[number], argv, redirects);
+            parseline(cmds[number], argv, redirects);
             if (argv[0] == NULL) {
                 app_fatal("no content for pipe");
             }
         }
+        unblock_sig(&mask);
         redirect(redirects);
-        if (number < pipes_num) {
-            do_dup(pipes[number][1], STDOUT_FILENO);
-        }
-        if (number > 0) {
-            do_dup(pipes[number-1][0], STDIN_FILENO);
-        }
+        connect_pipes(number, pipes, pipes_num);
         if (execvp(argv[0], argv) < 0) {
             printf("%s: Command not found.\n", argv[0]);
             exit(3);
         }
     }
-    inchild = true;
-    while (wait(NULL) > 0) {
-        ;
-    }
+    set_group(pids, pipes_num+1);
+    add_newjob(pids[0], bg, pipes_num+1, &mask);
 }
 
 /**
  * initjobs - Initialize jobs for shell.
- * jobs : Jobs to be initialized.
  */
 static void initjobs(job_t jobs[])
 {
     for (size_t i = 0; i < MAXARGS; ++i) {
+        jobs[i].num = 1;
         clearjob(&jobs[i]);
     }
 }
@@ -558,8 +827,10 @@ int main(void)
     }
     strcat(prompt, name);
     strcat(prompt, ":");
-    mysignal(SIGINT, sigint_handler);
-    mysignal(SIGTSTP, sigtstp_handler);
+    mysignal(SIGINT, sendsig);
+    mysignal(SIGTSTP, sendsig);
+    mysignal(SIGCHLD, sigchld_handler);
+    change_ttyio(SIG_IGN);
 
     initjobs(jobs);
     while (true) {
@@ -578,7 +849,6 @@ int main(void)
                 eval(args[i]);
             }
         }
-        inchild = false;
     }
     return 0;
 }
