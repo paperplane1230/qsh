@@ -64,24 +64,7 @@ static inline int redirect_type(const enum REDIRECT redirect)
 }
 
 /**
- * clearjob - Clear entries in a job structure.
- * job - Job to be cleared.
- */
-static inline void clearjob(job_t *job)
-{
-    if (job->num != 0) {
-        if (--job->num == 0) {
-            job->name[0] = '\0';
-            job->state = UNDEF;
-            job->jid = 0;
-            job->pid = 0;
-        }
-    }
-}
-
-/**
  * state2str - Convert STATE to string.
- * state : State to be converted.
  */
 static inline const char *state2str(const enum STATE state)
 {

@@ -123,8 +123,25 @@ static pid_t fgpid(const job_t jobs[])
 }
 
 /**
+ * clearjob - Clear entries in a job structure.
+ */
+static void clearjob(job_t *job)
+{
+    if (job->num != 0) {
+        if (--job->num == 0) {
+            if (job->state != UNDEF && job->state != FG) {
+                print_job(job, DONE);
+            }
+            job->name[0] = '\0';
+            job->state = UNDEF;
+            job->jid = 0;
+            job->pid = 0;
+        }
+    }
+}
+
+/**
  * pid2jid - Return jid corresponding to pid.
- * pid : Pid that the jid corresponds to.
  */
 static unsigned pid2jid(int pid)
 {
@@ -203,9 +220,6 @@ static void sigchld_handler(int sig)
                 print_job(job, CONTINUED);
             }
         } else {
-            if (job->state != FG && grps[pid] == pid) {
-                print_job(job, DONE);
-            }
             delete_job(jobs, grps[pid]);
         }
     }
