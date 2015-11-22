@@ -127,7 +127,7 @@ static void clearjob(job_t *job)
 {
     if (job->num != 0) {
         if (--job->num == 0) {
-            if (job->state != UNDEF && job->state != FG) {
+            if (job->state != UNDEF && job->state != FG && job->state != KILLED) {
                 print_job(job, DONE);
             }
             job->name[0] = '\0';
@@ -207,6 +207,7 @@ static void sigchld_handler(int sig)
         } else if (WIFSIGNALED(status)) {
             sig = WTERMSIG(status);
             if (sig == SIGKILL) {
+                job->state = KILLED;
                 print_job(job, KILLED);
             } else if (sig == SIGINT) {
                 fputs("\n", stdout);
