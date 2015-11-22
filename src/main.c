@@ -91,8 +91,6 @@ static void set_prompt(void)
 #ifndef DEBUG
 /**
  * getjob - Get job from the job list.
- * jobs : The job list.
- * jid : The jid of job.
  */
 static job_t *getjob(job_t jobs[], unsigned jid)
 {
@@ -175,7 +173,6 @@ static void delete_job(job_t jobs[], pid_t pid)
 
 /**
  * set_terminal - Modify pgid of a control terminal.
- * pgid : The control terminal's new pgid.
  */
 static void set_terminal(pid_t pgid)
 {
@@ -226,9 +223,9 @@ static void sigchld_handler(int sig)
 }
 
 /**
- * sendsig - Send signal to specific process group.
+ * sigint_handler - Handler of SIGINT.
  */
-static void sendsig(int sig)
+static void sigint_handler(int sig)
 {
     UNUSED(sig);
     fputs("\n", stdout);
@@ -255,7 +252,6 @@ static void do_dup(int oldfd, int newfd)
 
 /**
  * redirect - Do redirect according to content in redirects.
- * redirects : To store result of redirect.
  */
 static void redirect(const redirect_t *redirects)
 {
@@ -308,9 +304,6 @@ static void redirect(const redirect_t *redirects)
 
 /**
  * copybuf - Copy a string to an array.
- * dest : Array to store string.
- * buf : String to be copied.
- * num : Number of bytes to be copied.
  */
 static void copybuf(char *dest, const char *buf, size_t num)
 {
@@ -323,8 +316,6 @@ static void copybuf(char *dest, const char *buf, size_t num)
 
 /**
  * move_delim - Move delimiter and pointer of buffer when parsing command.
- * buf : Pointer of buffer.
- * delimiter : Delimiter to be moved.
  */
 static void move_delim(char **buf, char **delim)
 {
@@ -452,10 +443,6 @@ do_nothing:
 #ifndef DEBUG
 /**
  * addjob - Add a job to the job list.
- * job : Job to be added.
- * pid : Pid of the job.
- * state : Background or foreground.
- * cmd : Name of command.
  */
 static void addjob(job_t *jobs, pid_t pid, enum STATE state, const char *cmd, unsigned num)
 {
@@ -489,7 +476,6 @@ static void waitfg(const job_t jobs[])
 
 /**
  * listjobs - List present jobs.
- * jobs - Jobs to be printed.
  */
 static void listjobs(const job_t jobs[])
 {
@@ -633,9 +619,6 @@ static int split(char *buf, char delim, char *argv[])
 #ifndef DEBUG
 /**
  * closepipes - Close useless pipes in a specific process.
- * pipes : Pipes to be closed.
- * pipes_num : Number of pipes.
- * number : The number of specific process.
  */
 static void closepipes(int pipes[][2], int pipes_num, int number)
 {
@@ -667,7 +650,6 @@ static void block_sig(sigset_t *mask)
 
 /**
  * unblock_sig : Unblock signals in mask.
- * mask : Signals to be unblocked.
  */
 static void unblock_sig(sigset_t *mask)
 {
@@ -841,8 +823,8 @@ int main(void)
     }
     strcat(prompt, name);
     strcat(prompt, ":");
-    mysignal(SIGINT, sendsig);
-    mysignal(SIGTSTP, sendsig);
+    mysignal(SIGINT, sigint_handler);
+    mysignal(SIGTSTP, sigint_handler);
     mysignal(SIGCHLD, sigchld_handler);
     change_ttyio(SIG_IGN);
 

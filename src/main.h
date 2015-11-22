@@ -38,7 +38,6 @@ typedef void handler_t(int);
 
 /**
  * type2fd - Map type of redirect to file descriptor.
- * redirect : REDIRECT to be casted.
  */
 static inline int type2fd(const enum REDIRECT redirect)
 {
@@ -47,7 +46,6 @@ static inline int type2fd(const enum REDIRECT redirect)
 
 /**
  * get_direction - Get direction of redirect.
- * redirect : REDIRECT to be redirected.
  */
 static inline int get_direction(const enum REDIRECT redirect)
 {
@@ -56,7 +54,6 @@ static inline int get_direction(const enum REDIRECT redirect)
 
 /**
  * redirect_type - Get type of redirect.
- * redirect : REDIRECT to be redirected.
  */
 static inline int redirect_type(const enum REDIRECT redirect)
 {

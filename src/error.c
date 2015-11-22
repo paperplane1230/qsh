@@ -1,8 +1,4 @@
 /**
- * Author: Alan Chien
- * Email: upplane1230@gmail.com
- * Language: C
- * Date: Mon Oct 19 08:35:13 CST 2015
  * Description: Definitions of functions showing error.
  */
 #include "error.h"
@@ -11,7 +7,6 @@
 
 /**
  * app_fatal - Dealing with fatal errors caused by application.
- * err_msg : Error message to be printed.
  */
 void app_fatal(const char *err_msg)
 {
@@ -21,7 +16,6 @@ void app_fatal(const char *err_msg)
 
 /**
  * app_error - Dealing with normal errors caused by application.
- * err_msg : Error message to be printed.
  */
 void app_error(const char *err_msg)
 {
@@ -30,7 +24,6 @@ void app_error(const char *err_msg)
 
 /**
  * unix_error - Dealing with normal errors caused by system calls.
- * err_msg : Error message to be printed.
  */
 void unix_error(const char *err_msg)
 {
@@ -39,7 +32,6 @@ void unix_error(const char *err_msg)
 
 /**
  * unix_fatal - Dealing with fatal errors caused by system calls.
- * err_msg : Error message to be printed.
  */
 void unix_fatal(const char *err_msg)
 {
