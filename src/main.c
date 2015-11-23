@@ -130,6 +130,15 @@ static void clearjob(job_t *job)
             if (job->state != UNDEF && job->state != FG && job->state != KILLED) {
                 print_job(job, DONE);
             }
+            if (job->state != UNDEF) {
+                // send SIGHUP to orphaned process
+                if (kill(-job->pid, SIGHUP) < 0 && errno != ESRCH) {
+                    unix_fatal("kill error");
+                }
+                if (kill(-job->pid, SIGCONT) < 0 && errno != ESRCH) {
+                    unix_fatal("kill error");
+                }
+            }
             job->name[0] = '\0';
             job->state = UNDEF;
             job->jid = 0;
@@ -541,7 +550,7 @@ static void kill_bg(const job_t jobs[])
 {
     for (size_t i = 0; i < MAXARGS; ++i) {
         if (jobs[i].pid > 0) {
-            if (kill(-jobs[i].pid, SIGKILL) < 0) {
+            if (kill(-jobs[i].pid, SIGHUP) < 0) {
                 unix_fatal("kill error");
             }
         }
