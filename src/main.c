@@ -130,15 +130,6 @@ static void clearjob(job_t *job)
             if (job->state != UNDEF && job->state != FG && job->state != KILLED) {
                 print_job(job, DONE);
             }
-            if (job->state != UNDEF) {
-                // send SIGHUP to orphaned process
-                if (kill(-job->pid, SIGHUP) < 0 && errno != ESRCH) {
-                    unix_fatal("kill error");
-                }
-                if (kill(-job->pid, SIGCONT) < 0 && errno != ESRCH) {
-                    unix_fatal("kill error");
-                }
-            }
             job->name[0] = '\0';
             job->state = UNDEF;
             job->jid = 0;
@@ -230,6 +221,37 @@ static void sigchld_handler(int sig)
             delete_job(jobs, grps[pid]);
         }
     }
+}
+
+/**
+ * kill_bg - Kill process on background when shell exits.
+ */
+static void kill_bg(const job_t jobs[])
+{
+    for (size_t i = 0; i < MAXARGS; ++i) {
+        if (jobs[i].pid > 0) {
+            if (kill(-jobs[i].pid, SIGHUP) < 0) {
+                unix_fatal("kill error");
+            }
+        }
+    }
+}
+
+/**
+ * sigint_handler - Handler of SIGINT.
+ */
+static void sighup_handler(int sig)
+{
+    UNUSED(sig);
+    kill_bg(jobs);
+    for (size_t i = 0; i < MAXARGS; ++i) {
+        if (jobs[i].state == STOP) {
+            if (kill(-jobs[i].pid, SIGCONT) < 0) {
+                unix_fatal("kill error");
+            }
+        }
+    }
+    exit(4);
 }
 
 /**
@@ -544,20 +566,6 @@ static void do_bgfg(char *argv[], job_t jobs[])
 #endif
 
 /**
- * kill_bg - Kill process on background when shell exits.
- */
-static void kill_bg(const job_t jobs[])
-{
-    for (size_t i = 0; i < MAXARGS; ++i) {
-        if (jobs[i].pid > 0) {
-            if (kill(-jobs[i].pid, SIGHUP) < 0) {
-                unix_fatal("kill error");
-            }
-        }
-    }
-}
-
-/**
  * builtin_cmd - Judge whether the command is a builtin command.
  */
 static bool builtin_cmd(char **argv)
@@ -831,6 +839,7 @@ static void initjobs(job_t jobs[])
 {
     for (size_t i = 0; i < MAXARGS; ++i) {
         jobs[i].num = 1;
+        jobs[i].state = UNDEF;
         clearjob(&jobs[i]);
     }
 }
@@ -851,6 +860,7 @@ int main(void)
     mysignal(SIGINT, sigint_handler);
     mysignal(SIGTSTP, sigint_handler);
     mysignal(SIGCHLD, sigchld_handler);
+    mysignal(SIGHUP, sighup_handler);
     change_ttyio(SIG_IGN);
 
     initjobs(jobs);
