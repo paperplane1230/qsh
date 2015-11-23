@@ -535,11 +535,26 @@ static void do_bgfg(char *argv[], job_t jobs[])
 #endif
 
 /**
+ * kill_bg - Kill process on background when shell exits.
+ */
+static void kill_bg(const job_t jobs[])
+{
+    for (size_t i = 0; i < MAXARGS; ++i) {
+        if (jobs[i].pid > 0) {
+            if (kill(-jobs[i].pid, SIGKILL) < 0) {
+                unix_fatal("kill error");
+            }
+        }
+    }
+}
+
+/**
  * builtin_cmd - Judge whether the command is a builtin command.
  */
 static bool builtin_cmd(char **argv)
 {
     if (strcmp(*argv, "exit") == 0) {
+        kill_bg(jobs);
         exit(0);
     } else if (strcmp(*argv, "cd") == 0) {
         if (argv[1] == NULL) {
@@ -838,6 +853,7 @@ int main(void)
         }
         if (feof(stdin)) {
             fputs("\n", stdout);
+            kill_bg(jobs);
             return 0;
         }
         if (split(cmd, ';', args) > 0) {
