@@ -810,9 +810,9 @@ static void eval(char *cmdline)
         unix_fatal("fork error");
     } else if (pids[number] == 0) {
         setpgid_pipe(pids, number);
-        if (number == 0 && !bg) {
-            set_terminal(getpid());
-        }
+        // if (number == 0 && !bg) {
+        //     set_terminal(getpid());
+        // }
         change_ttyio(SIG_DFL);
         if (pipes_num > 0) {
             parseline(cmds[number], argv, redirects);
